@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Canlı Speech → Text (Mikrofon)</title>
+  <style>
+    :root{font-family:Inter, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial;}
+    body{display:flex;flex-direction:column;gap:18px;max-width:900px;margin:28px auto;padding:18px}
+    header{display:flex;align-items:center;gap:12px}
+    h1{font-size:20px;margin:0}
+    .controls{display:flex;gap:8px;flex-wrap:wrap}
+    select,input[type=button],button{padding:8px 12px;border-radius:8px;border:1px solid #ddd;background:#fff;cursor:pointer}
+    .status{padding:8px;border-radius:8px;background:#f7f7f7;border:1px dashed #e0e0e0}
+    #transcript{min-height:220px;padding:14px;border-radius:10px;border:1px solid #e6e6e6;background:#fff;white-space:pre-wrap;overflow:auto}
+    .interim{opacity:0.6}
+    footer{display:flex;gap:10px;flex-wrap:wrap}
+    .small{font-size:13px;color:#555}
+    .danger{color:#b00020}
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Canlı Speech → Text (mikrofon)</h1>
+    <div class="small">Tarayıcı: Chrome/Edge önerilir. Güvenli bağlam (https veya localhost) gereklidir.</div>
+  </header>
+
+  <div class="controls">
+    <label>
+      Dil:
+      <select id="lang">
+        <option value="tr-TR">Türkçe (tr-TR)</option>
+        <option value="en-US">English (en-US)</option>
+        <option value="de-DE">Deutsch (de-DE)</option>
+        <option value="fr-FR">Français (fr-FR)</option>
+      </select>
+    </label>
+
+    <button id="startBtn">Başlat</button>
+    <button id="stopBtn" disabled>Dur</button>
+    <button id="clearBtn">Temizle</button>
+
+    <button id="copyBtn">Panoya Kopyala</button>
+    <button id="downloadBtn">.txt İndir</button>
+  </div>
+
+  <div class="status" id="status">Durum: durdu</div>
+
+  <div id="transcript" aria-live="polite"></div>
+
+  <footer>
+    <div class="small">Aradaki gri metin <em>geçici (interim)</em> sonuçlardır; kesinleştikçe normal metne taşınır.</div>
+    <div class="small danger" id="errorArea"></div>
+  </footer>
+
+  <script>
+    // Temel kontrol ve kullanıcı arayüzü
+    const startBtn = document.getElementById('startBtn');
+    const stopBtn = document.getElementById('stopBtn');
+    const clearBtn = document.getElementById('clearBtn');
+    const copyBtn = document.getElementById('copyBtn');
+    const downloadBtn = document.getElementById('downloadBtn');
+    const transcriptEl = document.getElementById('transcript');
+    const statusEl = document.getElementById('status');
+    const errorArea = document.getElementById('errorArea');
+    const langSelect = document.getElementById('lang');
+
+    // Tarayıcı desteği
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition || null;
+    if (!SpeechRecognition) {
+      errorArea.textContent = 'SpeechRecognition API bu tarayıcıda desteklenmiyor. Lütfen Chrome/Edge kullanın.';
+      startBtn.disabled = true;
+    }
+
+    let recognition = null;
+    let running = false;
+    let finalTranscript = '';
+
+    function updateUI(){
+      statusEl.textContent = `Durum: ${running ? 'çalışıyor' : 'durduruldu'}`;
+      startBtn.disabled = running || !SpeechRecognition;
+      stopBtn.disabled = !running;
+    }
+
+    function initRecognition(){
+      if (!SpeechRecognition) return;
+      recognition = new SpeechRecognition();
+      recognition.lang = langSelect.value || 'tr-TR';
+      recognition.interimResults = true; // anlık sonuçlar
+      recognition.continuous = true;      // durmadan dinle
+
+      recognition.onstart = () => {
+        running = true;
+        updateUI();
+        errorArea.textContent = '';
+      };
+
+      recognition.onerror = (ev) => {
+        console.error('speech error', ev);
+        errorArea.textContent = `Hata: ${ev.error}`;
+        // bazı hatalarda yeniden başlatma denenebilir (ör. network, no-speech)
+      };
+
+      recognition.onend = () => {
+        // Kullanıcı durdurmadıysa otomatik tekrar bağlanma dene — daha stabil bir akış için
+        running = false;
+        updateUI();
+        // Eğer user tarafından durdurulmamışsa otomatik yeniden başlat
+        if (recognition && recognition.autoRestart) {
+          try { recognition.start(); } catch(e){}
+        }
+      };
+
+      recognition.onresult = (event) => {
+        let interim = '';
+        for (let i = event.resultIndex; i < event.results.length; ++i) {
+          const res = event.results[i];
+          if (res.isFinal) {
+            finalTranscript += res[0].transcript;
+            finalTranscript = finalTranscript.replace(/\n\s+/g, '\n');
+          } else {
+            interim += res[0].transcript;
+          }
+        }
+        renderTranscripts(finalTranscript, interim);
+      };
+
+    }
+
+    function renderTranscripts(finalT, interimT){
+      // final metin normal, anlık metin gri
+      transcriptEl.innerHTML = '';
+      const pFinal = document.createElement('div');
+      pFinal.textContent = finalT;
+      transcriptEl.appendChild(pFinal);
+
+      if (interimT) {
+        const pInterim = document.createElement('div');
+        pInterim.textContent = interimT;
+        pInterim.className = 'interim';
+        transcriptEl.appendChild(pInterim);
+      }
+
+      // otomatik kaydırma
+      transcriptEl.scrollTop = transcriptEl.scrollHeight;
+    }
+
+    // Butonlar
+    startBtn.addEventListener('click', async () => {
+      errorArea.textContent = '';
+      finalTranscript = finalTranscript || '';
+      initRecognition();
+      if (!recognition) return;
+      recognition.lang = langSelect.value;
+      recognition.autoRestart = true; // onend'de tekrar başlat
+      try {
+        recognition.start();
+        running = true;
+        updateUI();
+      } catch (e) {
+        console.error(e);
+        errorArea.textContent = 'Mikrofon başlatılamadı: ' + e.message;
+      }
+    });
+
+    stopBtn.addEventListener('click', () => {
+      if (!recognition) return;
+      recognition.autoRestart = false;
+      try { recognition.stop(); } catch(e){}
+      running = false;
+      updateUI();
+    });
+
+    clearBtn.addEventListener('click', () => {
+      finalTranscript = '';
+      renderTranscripts('', '');
+    });
+
+    copyBtn.addEventListener('click', async () => {
+      try {
+        await navigator.clipboard.writeText(finalTranscript);
+        copyBtn.textContent = 'Kopyalandı!';
+        setTimeout(()=>copyBtn.textContent='Panoya Kopyala',900);
+      } catch(e){
+        errorArea.textContent = 'Panoya kopyalanamadı: ' + e.message;
+      }
+    });
+
+    downloadBtn.addEventListener('click', () => {
+      const blob = new Blob([finalTranscript], {type:'text/plain;charset=utf-8'});
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'transcript.txt';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    });
+
+    // Dil değişince ve sayfa ilk yüklenince tanımla
+    langSelect.addEventListener('change', () => {
+      if (recognition) {
+        recognition.lang = langSelect.value;
+      }
+    });
+
+    updateUI();
+  </script>
+</body>
+</html>
